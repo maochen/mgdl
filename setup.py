@@ -24,7 +24,8 @@ setuptools.setup(
         "tqdm",
         "torch",
         "torchvision",
-        "tensorboardX"
+        "tensorboardX",
+        "transformers"
     ],
     dependency_links=[
     ],

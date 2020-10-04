@@ -1,143 +1,135 @@
-from torch import nn
-from torch.nn import Dropout, Conv1d
-from torch.optim import Adam
+import datasets
+from datasets import load_dataset
+from torch import nn, IntTensor
+from torch.optim import AdamW
 from torch.utils.data import DataLoader, Dataset
-from transformers import Conv1D
+from transformers import BertModel, BertTokenizer
 
 from core.abstract_classifier import AbstractClassifier
 
 # WIP ...
+from util.utils import flatten_list
+
+
 class CRFNERModel(nn.Module):
-    def __init__(self, vocab_size: int):
+    def __init__(self, num_classes: int):
         super(CRFNERModel, self).__init__()
-
-        # self.char_emb = nn.Embedding(128, 30)
-        # self.char_dropout = Dropout()
-        self.word_emb = nn.Embedding(vocab_size, 300)
-
-        hidden_dim = 20
-        self.lstm = nn.LSTM(300, hidden_dim // 2, num_layers=1, bidirectional=True)
-        self.hidden2tag = nn.Linear(hidden_dim, self.tagset_size)
-
+        self.tokenizer = BertTokenizer.from_pretrained('bert-base-cased')
+        self.model = BertModel.from_pretrained('bert-base-cased')
+        self.criterion = nn.CrossEntropyLoss()
+        self.optimizer = AdamW(self.model.parameters(), lr=1e-5)
 
     def forward(self, x):
-        y = nn.functional.relu(self.fc(x))
-        return y
+        # def forward(
+        #         self,
+        #         input_ids=None,
+        #         attention_mask=None,
+        #         token_type_ids=None,
+        #         position_ids=None,
+        #         head_mask=None,
+        #         inputs_embeds=None,
+        #         encoder_hidden_states=None,
+        #         encoder_attention_mask=None,
+        #         output_attentions=None,
+        #         output_hidden_states=None,
+        #         return_dict=None,
+        # ):
+        y = self.model.forward(**x)
+        last_hidden_states = y.last_hidden_state
+        return last_hidden_states
 
 
 class CRFNER(AbstractClassifier):
-
-    def __init__(self, input_size: int):
+    def __init__(self):
         super(CRFNER, self).__init__()
-        self.input_size = input_size
 
     def get_model(self, num_classes: int, **kwargs):
-        self.model = CRFNERModel(self.input_size, num_classes)
-        self.criterion = nn.CrossEntropyLoss()
-        self.optimizer = Adam(self.model.parameters(), betas=(0.9, 0.98), eps=10e-9)
-        return self.model, self.criterion, self.optimizer
+        self.model = CRFNERModel(num_classes)
+        return self.model, self.model.criterion, self.model.optimizer
 
-    def load_data(self) -> (DataLoader, {}):
-        label2idx = {"yes": 1, "no": 0}
+    def load_data(self, data, tokenizer) -> (DataLoader, {}):
+        self.label2idx = {"[CLS]": 0, "[SEP]": 1, "[PAD]": 2}
 
-        input_size = self.input_size
-
-        class SampleDataset(Dataset):
-            def __init__(self):
-                self.count = 0
+        class SeqDataset(Dataset):
+            def __init__(self, data: {}):
+                self.data = data
 
             def __len__(self):
-                return 1000
+                return len(self.data)
 
             def __getitem__(self, idx):
-                start = min(label2idx.values())
-                end = max(label2idx.values()) + 1
-                y = np.random.randint(start, end)
+                x = self.data[idx]["sentence"]
+                y = self.data[idx]["label"]
+                return x, y, f"id_{idx}"
 
-                self.count += 1
-                return torch.rand(input_size), y, f"id_{self.count}"
+        max_len = 0
+        for it in data:
+            raw_text_arr = it[0]
+            label_arr = it[1]
+            if len(raw_text_arr) != len(label_arr):
+                continue
+            max_len = max(max_len, len(label_arr))
 
-        ds = SampleDataset()
-        return DataLoader(ds, batch_size=1000), label2idx
+        transformed_datasets = []
+        for idx, it in enumerate(data):
+            raw_text_arr = it[0]
+            label_arr = it[1]
 
+            if len(label_arr) < max_len:
+                for _ in range(max_len - len(label_arr)):
+                    label_arr.append("[PAD]")
+                    raw_text_arr.append("[PAD]")
 
+            y = [0]  # CLS
+            for label in label_arr:
+                if label not in self.label2idx.keys():
+                    self.label2idx[label] = len(self.label2idx)
+                y.append(self.label2idx[label])
 
+            y.append(1)  # SEP
+            y = IntTensor(y)
+            sentence = " ".join(raw_text_arr)  # TODO: hack
 
+            if len(raw_text_arr) != len(y) - 2:
+                print(f"unable to load {' '.join(raw_text_arr)}. len(tokens): {len(raw_text_arr)} len(labels): {len(y) - 2}")
 
+            transformed_datasets.append({"sentence": sentence, "label": y, "idx": idx})
 
+        def encode(examples):
+            return tokenizer(examples['sentence'], truncation=True, padding='max_length')
 
-
-
-
-
-        # Make up some training data
-        training_data = [(
-            "the wall street journal reported today that apple corporation made money".split(),
-            "B I I I O O O B I O O".split()
-        ), (
-            "georgia tech is a university in georgia".split(),
-            "B I O O O O B".split()
-        )]
-
-
-
-
-
-
-
-
-
-
-
-# char
-        char_input = Input(shape=(None, char_maxlen,), name="char_input")
-        # not maintain input dim, directly using ASCII
-        char_layer = TimeDistributed(
-            Embedding(input_dim=128, output_dim=30, embeddings_initializer=RandomUniform(minval=-0.5, maxval=0.5)), trainable=True, name="char_emb")(char_input)
-        char_layer = Dropout(0.5, name="char_dropout_1")(char_layer)
-        char_layer = TimeDistributed(Conv1D(kernel_size=3, filters=30, padding='same', activation='tanh', strides=1), name="char_conv")(char_layer)
+        # dataset = load_dataset('csv', data_files='my_file.csv')
+        dataset = datasets.arrow_dataset.Dataset.from_dict({"sentence": "aa", "label": "aa", "idx": 1})
+        dataset = dataset.map(encode, batched=True)
+        return DataLoader(dataset, batch_size=1000), self.label2idx
 
 
+if __name__ == "__main__":
+    cf = CRFNER()
+    model, criterion, optimizer = cf.get_model(2)
+    # dataset = load_dataset('json', data_files="/Users/castor/Desktop/a.json")
+    dataset = load_dataset("polyglot_ner", "en")
+    dataset = dataset["train"][0:2]
+    dataset = datasets.Dataset.from_dict(dataset)
+    tokenizer = model.tokenizer
 
 
+    def encode(data):
+        return tokenizer(text=data['words'], is_split_into_words=True, padding='max_length')
 
-        char_layer = TimeDistributed(MaxPooling1D(char_maxlen), name="char_maxpool")(char_layer)
-        char_layer = TimeDistributed(Flatten(), name="char_flatten")(char_layer)
-        char_layer = Dropout(0.5, name="char_dropout_2")(char_layer)
 
-        # word
-        words_input = Input(shape=(None,), dtype="int32", name="words_input")
-
-        if word_emb is not None:  # emb_matrix.shape=vocab_size+1, emb_dim("50")
-            words_layer = Embedding(input_dim=word_emb.shape[0], output_dim=word_emb.shape[1], weights=[word_emb], mask_zero=True, trainable=False, name="word_emb")(words_input)
-        else:
-            words_layer = Embedding(input_dim=vocab_size + 1, output_dim=emb_dim, mask_zero=True, trainable=False, name="word_emb")(words_input)
-
-        feat_input = Input(shape=(None, feat_size), dtype="float32", name="feat_input")
-        feat_layer = Dense(input_dim=feat_size, activation="relu", units=feat_size, trainable=True)(feat_input)
-        shared_output = concatenate([words_layer, char_layer, feat_layer], name="concat")
-
-        shared_output = Bidirectional(LSTM(bi_rnn_units, return_sequences=True, dropout=0.5, recurrent_dropout=0.25), name="BiLSTM_1")(shared_output)
-        shared_output = MultiHeadAttention(head_num=multi_head_num, name="Multihead_Attn")(shared_output)
-        shared_output = BatchNormalization(name="BatchNorm1")(shared_output)
-
-        intent_output = Bidirectional(LSTM(bi_rnn_units, return_sequences=False, dropout=0.5, recurrent_dropout=0.25), name="Intent_BiLSTM")(shared_output)
-        intent_output = BatchNormalization(name="Intent_BatchNorm2")(intent_output)
-        intent_output = Dense(label_size[0], activation="softmax", name="Intent_softmax")(intent_output)
-
-        # had to set Embedding mask_zero=True for avoid neg loss. https://github.com/keras-team/keras-contrib/issues/278
-        bi_crf = CRF(label_size[1], sparse_target=True, name="BI_CRF")
-        bi_output = bi_crf(shared_output)
-
-        concept_crf = CRF(label_size[2], sparse_target=True, name="Concept_CRF")
-        concept_output = concept_crf(shared_output)
-
-        emd_crf = CRF(label_size[3], sparse_target=True, name="EMD_CRF")
-        emd_output = emd_crf(shared_output)
-
-        model = Model(inputs=[words_input, char_input, feat_input], outputs=[intent_output, bi_output, concept_output, emd_output])
-        adam_optimizer = Adam(beta_1=0.9, beta_2=0.98, epsilon=10e-9)
-
-        model.compile(optimizer=adam_optimizer, loss=["categorical_crossentropy", crf_loss_joined(bi_crf), crf_loss_joined(concept_crf), crf_loss_joined(emd_crf)],
-                      metrics={"Intent_softmax": "accuracy", "BI_CRF": crf_accuracy_joined(bi_crf), "Concept_CRF": crf_accuracy_joined(concept_crf),
-                               "EMD_CRF": crf_accuracy_joined(emd_crf)})
+    dataset = dataset.map(encode, batched=True)
+    # dataset = dataset.map(lambda it: {'labels': it['label']}, batched=True)
+    labels = set(flatten_list(dataset["ner"]))
+    cf.label2idx = {label: idx + 3 for idx, label in enumerate(labels)}
+    cf.label2idx.update({"[CLS]": 0, "[SEP]": 1, "[PAD]": 2})
+    dataset.set_format(type='torch', columns=['input_ids', 'token_type_ids', 'attention_mask', 'ner'])
+    dl = DataLoader(dataset, batch_size=32)
+    cf.predict(dl)
+    # tokenizer = BertTokenizer.from_pretrained('bert-base-cased')
+    # model = BertModel.from_pretrained('bert-base-cased')
+    #
+    # inputs = tokenizer("Hello, my dog is cute", return_tensors="pt")
+    # outputs = model(**inputs)
+    #
+    # print(outputs)

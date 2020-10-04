@@ -1,17 +1,12 @@
 import base64
-import binascii
 import collections
-import csv
 import logging
-import os
 import re
 import sys
-import tempfile
 
 import numpy as np
 import torch
-import tqdm
-from torch.utils.data import Dataset, WeightedRandomSampler, SubsetRandomSampler
+from torch.utils.data import Dataset, WeightedRandomSampler
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +14,14 @@ logger = logging.getLogger(__name__)
 class NoReturnLoggerFilter(logging.Filter):
     def filter(self, record):
         return False
+
+
+def flatten_list(l):
+    for el in l:
+        if isinstance(el, collections.Iterable) and not isinstance(el, (str, bytes)):
+            yield from flatten_list(el)
+        else:
+            yield el
 
 
 def batch_padding(vector_arr: [], padding_value: int, right_padding: bool = True,
@@ -115,4 +118,3 @@ def get_sampler_4_balanced_classes(dataset: Dataset, num_classes: int, prev_sele
     # Make max class instance*1.6 size to upsampling not allowed classes.
     sampler = WeightedRandomSampler(weight, int(max_class_count * num_classes * 0.8), replacement=True)
     return sampler
-

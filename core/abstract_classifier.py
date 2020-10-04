@@ -3,7 +3,6 @@ import logging
 import os
 import sys
 import time
-import traceback
 from abc import abstractmethod
 from collections import OrderedDict
 from subprocess import call
@@ -223,7 +222,8 @@ class AbstractClassifier:
 
         with torch.no_grad():  # IMPORTANT
             for batch_num, (x, y, row_id) in tqdm.tqdm(enumerate(predict_dl), total=len(predict_dl), desc="Evaluation",
-                                                       file=self.tqdm_logger):
+                                              file=self.tqdm_logger):
+
                 if x is None:
                     continue
 
