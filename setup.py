@@ -25,7 +25,8 @@ setuptools.setup(
         "torch",
         "torchvision",
         "tensorboardX",
-        "transformers"
+        "transformers",
+        "datasets"
     ],
     dependency_links=[
     ],
